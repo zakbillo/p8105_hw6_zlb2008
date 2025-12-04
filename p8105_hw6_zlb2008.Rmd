@@ -10,6 +10,7 @@ library(tidyverse)
 library(broom)
 library(purrr)
 library(p8105.datasets)
+library(modelr)
 library(patchwork)
 
 knitr::opts_chunk$set(
@@ -129,7 +130,7 @@ set.seed(1)
 
 bootstrap_results <-
   weather_df |>
-  modelr::bootstrap(n = 5000) |>
+  bootstrap(n = 5000) |>
   mutate(
     models = map(strap, \(df) lm(tmax ~ tmin + prcp, data = df)),
     results_glance = map(models, broom::glance),
@@ -179,5 +180,150 @@ ci_results <-
 
 knitr::kable(ci_results, digits = 3)
 ```
+The 95% CI for $\frac{\beta_1}{\beta_2}$ is approximately (-278, -126). The CI does not cross 0, so the ratio is consistently negative and not due to chance.
+
 
 ## Problem 3
+
+turn relevant vars into factors 
+
+```{r}
+birthweight_df = read_csv("data/birthweight.csv", na = c("NA", ".", "")) |> 
+  janitor::clean_names() |> 
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2),
+                     labels = c("Male", "Female")),
+    
+    frace = factor(frace, 
+                   levels = c(1, 2, 3, 4, 8, 9),
+                   labels = c("White", "Black", "Asian", "Puerto Rican", "Other", "Unknown")),
+    
+    mrace = factor(mrace,
+                   levels = c(1, 2, 3, 4, 8),
+                   labels = c("White", "Black", "Asian", "Puerto Rican", "Other")),
+    
+    malform = factor(malform, 
+                     levels = c(0, 1),
+                     labels = c("Absent", "Present"))
+  )
+
+summary(is.na(birthweight_df))
+```
+
+I propose the following predictors drive infant birthweight:
+
+Malformations (malform)
+
+Gestational age (gaweeks)
+
+Maternal age at delivery (momage)
+
+Pre-pregnancy BMI (ppbmi)
+
+Weight gain during pregnancy (wtgain)
+
+Smoking during pregnancy (smoken)
+
+Maternal race (mrace)
+
+Fraternal race (frace)
+
+Family income (fincome)
+
+I removed variables from my model like pnumlbw (previous low birthweight babies) and parity because they provided no additional explanatory power. Infant physical measurements (blength, bhead) were ommitted, since they aren't predictive of the infants birthweight at delivery.
+
+```{r}
+main_bw_model =
+  lm(
+    bwt ~ malform + gaweeks + momage + ppbmi + wtgain + smoken + mrace + frace + fincome,
+    data = birthweight_df
+  )
+
+summary(main_bw_model)
+```
+
+now add residuals 
+
+```{r}
+birthweight_df |> 
+  add_predictions(main_bw_model) |> 
+  add_residuals(main_bw_model) |> 
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.4) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Residuals vs Fitted Values (Main Model)",
+    x = "Fitted Values (Predicted Infant Birthweight)",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+```
+
+make a simple model and one with interaction
+
+```{r}
+simple_bw_model =
+  lm(bwt ~ blength + gaweeks, data = birthweight_df)
+
+interation_bw_model =
+  lm(bwt ~ bhead * blength * gaweeks, data = birthweight_df)
+```
+
+compare to main model
+
+```{r}
+set.seed(1)
+
+cv_df =
+  crossv_mc(birthweight_df, n = 5000) |>
+  mutate(
+    train = map(train, as_tibble),
+    test  = map(test,  as_tibble)
+  )
+
+cv_df =
+  cv_df |>
+  mutate(
+    main_model = map(train, \(df) lm(bwt ~ malform + gaweeks + momage + ppbmi + wtgain + smoken + mrace + frace + fincome,
+    data = df)),
+    simple_model = map(train, \(df) lm(bwt ~ blength + gaweeks, data = df)),
+    interaction_model  = map(train, \(df) lm(bwt ~ bhead * blength * gaweeks, data = df))
+  )
+
+cv_df =
+  cv_df |>
+  mutate(
+    rmse_main = map2_dbl(main_model, test, rmse),
+    rmse_simple = map2_dbl(simple_model, test, rmse),
+    rmse_interaction  = map2_dbl(interaction_model, test, rmse)
+  )
+
+cv_long =
+  cv_df |>
+  select(starts_with("rmse")) |>
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) |>
+  mutate(
+    model = fct_inorder(recode(model,
+                               main   = "Main model",
+                               simple = "Length + GA",
+                               inter  = "3-way interaction"))
+  )
+
+cv_long |>
+  ggplot(aes(x = model, y = rmse, fill = model)) +
+  geom_violin(alpha = 0.5, color = "blue") +
+  scale_fill_viridis_d() +
+  labs(
+    title = "Cross-Validation Model Comparison",
+    x = "Model",
+    y = "Root Mean Squared Error (RMSE)"
+  ) +
+  theme_minimal()
+```
+
+The cross-validated RMSE plot shows a large difference in predictive performance across the models. My main model has by far the highest RMSE values, meaning it predicting birthweight with the highest error. The Length + Gestational Age model performs better, with lower RMSE values. Finally, the full interaction model (incorporates head circumference, length, sex, and all their lower-order interaction) has the the lowest RMSE overall and best predictive performance.
