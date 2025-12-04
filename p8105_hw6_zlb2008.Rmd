@@ -40,6 +40,94 @@ Now run glm for each of the cities in your dataset, and extract the adjusted odd
 Create a plot that shows the estimated ORs and CIs for each city. Organize cities according to estimated OR, and comment on the plot.
 
 ```{r}
-
+homicide_df <- read.csv('data/homicide-data.csv', na = c("NA", ".", "")) |>
+  janitor::clean_names() |>
+  mutate(
+    city_state = str_c(city, ", ", state)
+  ) |>
+  filter(
+    !city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL"),
+    victim_race %in% c("White", "Black")
+  ) |>
+  mutate(
+    victim_age = as.numeric(victim_age),
+    case_outcome = ifelse(disposition == "Closed by arrest", 1, 0)
+  ) |>
+  filter(!is.na(victim_age)) |>
+  select(city_state, case_outcome, victim_age, victim_sex, victim_race)
 ```
+
+glm for Baltimore, MD
+
+```{r}
+bmore_results =
+  homicide_df |> 
+  filter(city_state == "Baltimore, MD") |> 
+  glm(
+    case_outcome ~ victim_age + victim_sex + victim_race,
+    family = binomial(),
+    data = _
+  ) |> 
+  broom::tidy(conf.int = TRUE) |> 
+  mutate(
+    OR = exp(estimate),
+    CL_low = exp(conf.low),
+    CL_high = exp(conf.high)
+  ) |>
+  filter(term == "victim_sexMale") |>
+  select(term, log_OR = estimate, OR, CL_low, CL_high, p.value)
+
+bmore_results |> knitr::kable(digits = 3)
+```
+The odds ratio for solved homocides among male victims compared to that among female victims in Baltimore, MD is 0.426 (95% CI: 0.324, 0.558), adjusting for victim age and race.
+
+```{r}
+city_results =
+  homicide_df |> 
+  nest(data = -city_state) |> 
+  mutate(
+    fit = map(
+      data,
+      ~ glm(case_outcome ~ victim_age + victim_sex + victim_race,
+            family = binomial(), data = .x)
+    ),
+    tidy_fit = map(fit, ~ broom::tidy(.x, conf.int = TRUE))
+  ) |>
+  unnest(tidy_fit) |>
+  filter(term == "victim_sexMale") |>
+  mutate(
+    OR = exp(estimate),
+    CL_low = exp(conf.low),
+    CL_high = exp(conf.high)
+  ) |>
+  select(city_state, OR, CL_low, CL_high, p.value)
+
+city_results |> 
+  knitr::kable(digits = 3)
+```
+plot the ORs 
+
+```{r}
+city_results |>
+  mutate(city_state = fct_reorder(city_state, OR)) |>
+  ggplot(aes(y = city_state, x = OR)) +
+  geom_point(size = 2) +
+  geom_errorbarh(aes(xmin = CL_low, xmax = CL_high), height = 0.15) +
+  geom_vline(xintercept = 1, color = "red", linetype = "dotted") +
+  labs(
+    title = "Adjusted Odds Ratio for Solved Homicides: Male vs Female Victims",
+    x = "Odds Ratio (adjusted for age & race)",
+    y = "City"
+  ) +
+  theme_minimal()
+```
+
+The plot of ORs by city shows that most cities have a lower odds of solving homicide cases for male victims compared to female victims. 
+
+Albuquerque, NM; Stockton, CA; and Fresno, CA are the exception given that they have the highest estimated odds ratios, meaning that homicides with male victim are more likely to be solved than homicides with female victims. However, most of these cities' estimated ORs have confidence intervals that include the null, implying there is no statistically significant evidence of a difference in the odds of solving homicides between male and female victims.
+
+New York, NY; Baton Rouge, LA; and Omaha, NE have the lowest odds of solving homicide cases for male victims compared to female victims. The OR confidence intervals for these cities is below 1, providing statistically significant evidence for lower solve rates among male-victim cases.
+
+## Problem 2 
+
 
